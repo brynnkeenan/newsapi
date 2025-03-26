@@ -1,8 +1,13 @@
+# Updated article_scraper.py to use readability-lxml for main article extraction
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from readability import Document
 
 CHARACTER_THRESHOLD = 5156
+
+article_cache = {}
+seen_urls = set()  # Track previously served article URLs
 
 def get_npr_article():
     feed = feedparser.parse('https://feeds.npr.org/1001/rss.xml')
@@ -14,24 +19,29 @@ def get_npr_article():
 
     for entry in feed.entries:
         url = entry.link
+        if url in seen_urls:
+            continue
+
         try:
             r = requests.get(url)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            title = soup.find('h1').text.strip()
-            content = soup.find('article') or soup.find('div', class_='storytext')
-            text = '\n\n'.join(p.text for p in content.find_all('p')) if content else entry.summary
+            doc = Document(r.text)
+            title = doc.short_title()
+            html = doc.summary()
+            text = BeautifulSoup(html, "html.parser").get_text()
         except Exception:
             continue
 
         if len(text) >= CHARACTER_THRESHOLD:
+            seen_urls.add(url)
             return {'source': 'NPR', 'title': title, 'url': url, 'text': text}
 
         if len(text) > len(longest_text):
             longest_text = text
             best_article = {'source': 'NPR', 'title': title, 'url': url, 'text': text}
 
+    if best_article:
+        seen_urls.add(best_article["url"])
     return best_article or {'source': 'NPR', 'title': 'No qualifying article found', 'url': '', 'text': ''}
-
 
 def get_the_conversation_article():
     feed = feedparser.parse('https://theconversation.com/us/articles.atom')
@@ -43,34 +53,29 @@ def get_the_conversation_article():
 
     for entry in feed.entries:
         url = entry.link
+        if url in seen_urls:
+            continue
+
         try:
             r = requests.get(url)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            title = soup.find('h1').text.strip()
-
-            content = (
-                soup.find('div', {'id': 'article-body'}) or 
-                soup.find('div', {'class': 'content'}) or 
-                soup.find('article')
-            )
-
-            if not content:
-                continue
-
-            paragraphs = content.find_all('p')
-            text = '\n\n'.join(p.text.strip() for p in paragraphs if p.text.strip())
-
-            if len(text) >= CHARACTER_THRESHOLD:
-                return {'source': 'The Conversation', 'title': title, 'url': url, 'text': text}
-
-            if len(text) > len(longest_text):
-                longest_text = text
-                best_article = {'source': 'The Conversation', 'title': title, 'url': url, 'text': text}
+            doc = Document(r.text)
+            title = doc.short_title()
+            html = doc.summary()
+            text = BeautifulSoup(html, "html.parser").get_text()
         except Exception:
             continue
 
-    return best_article or {'source': 'The Conversation', 'title': 'No qualifying article found', 'url': '', 'text': ''}
+        if len(text) >= CHARACTER_THRESHOLD:
+            seen_urls.add(url)
+            return {'source': 'The Conversation', 'title': title, 'url': url, 'text': text}
 
+        if len(text) > len(longest_text):
+            longest_text = text
+            best_article = {'source': 'The Conversation', 'title': title, 'url': url, 'text': text}
+
+    if best_article:
+        seen_urls.add(best_article["url"])
+    return best_article or {'source': 'The Conversation', 'title': 'No qualifying article found', 'url': '', 'text': ''}
 
 def get_conservative_article():
     feed = feedparser.parse('https://www.theamericanconservative.com/feed/')
@@ -83,19 +88,50 @@ def get_conservative_article():
     for entry in feed.entries:
         title = entry.title
         url = entry.link
-        html_content = entry.get("content", [{}])[0].get("value", "") or entry.get("summary", "")
-        soup = BeautifulSoup(html_content, 'html.parser')
-        paragraphs = soup.find_all("p")
-        text = '\n\n'.join(
-            p.text.strip() for p in paragraphs 
-            if p.text and not p.text.lower().startswith("the post ")
-        )
+        if url in seen_urls:
+            continue
+
+        try:
+            r = requests.get(url)
+            doc = Document(r.text)
+            html = doc.summary()
+            text = BeautifulSoup(html, "html.parser").get_text()
+        except Exception:
+            continue
 
         if len(text) >= CHARACTER_THRESHOLD:
+            seen_urls.add(url)
             return {'source': 'The American Conservative', 'title': title, 'url': url, 'text': text}
 
         if len(text) > len(longest_text):
             longest_text = text
             best_article = {'source': 'The American Conservative', 'title': title, 'url': url, 'text': text}
 
+    if best_article:
+        seen_urls.add(best_article["url"])
     return best_article or {'source': 'The American Conservative', 'title': 'No qualifying article found', 'url': '', 'text': ''}
+
+def scrape_all_feeds():
+    global article_cache
+    article_cache = {
+        "npr": get_npr_article(),
+        "conversation": get_the_conversation_article(),
+        "american_conservative": get_conservative_article()
+    }
+    return article_cache
+
+def scrape_one_feed(source_name):
+    if source_name == "npr":
+        result = get_npr_article()
+    elif source_name == "conversation":
+        result = get_the_conversation_article()
+    elif source_name == "american_conservative":
+        result = get_conservative_article()
+    else:
+        return {"error": "Invalid source name"}
+
+    article_cache[source_name] = result
+    return {source_name: result}
+
+def get_cached_articles():
+    return article_cache if article_cache else {"error": "No articles cached yet"}
